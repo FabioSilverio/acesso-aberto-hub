@@ -3,7 +3,6 @@ import type { FormEvent } from 'react'
 
 type WaybackSnapshot = {
   available: boolean
-  status?: string
   timestamp?: string
   url?: string
 }
@@ -14,31 +13,16 @@ type WaybackResponse = {
   }
 }
 
-type ResourceLink = {
-  title: string
-  description: string
-  href: string
-}
-
-type OpenAlexSource = {
-  display_name?: string
-}
-
 type OpenAlexLocation = {
-  is_oa?: boolean
-  license?: string | null
-  landing_page_url?: string | null
   pdf_url?: string | null
-  source?: OpenAlexSource
+  landing_page_url?: string | null
 }
 
 type OpenAlexWork = {
   id: string
   display_name: string
   publication_year?: number
-  doi?: string | null
   open_access?: {
-    is_oa?: boolean
     oa_url?: string | null
     oa_status?: string | null
   }
@@ -47,6 +31,53 @@ type OpenAlexWork = {
 
 type OpenAlexResponse = {
   results?: OpenAlexWork[]
+}
+
+type DoajResponse = {
+  total?: number
+}
+
+type CrossrefSearchResponse = {
+  message?: {
+    items?: Array<{
+      DOI?: string
+      title?: string[]
+    }>
+  }
+}
+
+type SemanticScholarPaper = {
+  title?: string
+  url?: string
+  openAccessPdf?: {
+    url?: string
+  }
+}
+
+type SemanticScholarResponse = {
+  data?: SemanticScholarPaper[]
+}
+
+type CheckStatus = 'working' | 'not_working' | 'unknown'
+
+type CheckLink = {
+  label: string
+  href: string
+}
+
+type CheckResult = {
+  id: string
+  title: string
+  status: CheckStatus
+  summary: string
+  links: CheckLink[]
+}
+
+type CheckContext = {
+  url: string
+  doi: string | null
+  titleHint: string
+  host: string
 }
 
 const DOI_REGEX = /10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i
@@ -61,7 +92,7 @@ function normalizeUrl(rawUrl: string): string {
   const parsed = new URL(withProtocol)
 
   if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Use uma URL HTTP/HTTPS válida.')
+    throw new Error('Use uma URL HTTP/HTTPS valida.')
   }
 
   return parsed.toString()
@@ -136,88 +167,6 @@ function formatSnapshotDate(timestamp: string): string {
   return `${day}/${month}/${year} ${hour}:${minute}`
 }
 
-function buildResourceLinks(url: string, doi: string | null, titleHint: string, host: string): ResourceLink[] {
-  const query = titleHint || url
-
-  const links: ResourceLink[] = [
-    {
-      title: 'Wayback Machine (timeline)',
-      description: 'Veja versões históricas públicas da página no Internet Archive.',
-      href: `https://web.archive.org/web/*/${encodeURIComponent(url)}`,
-    },
-    {
-      title: 'Archive.org (busca geral)',
-      description: 'Procure cópias públicas e itens relacionados pelo título da página.',
-      href: `https://archive.org/search?query=${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'Google Scholar',
-      description: 'Busque versões acadêmicas, citações e manuscritos relacionados.',
-      href: `https://scholar.google.com/scholar?q=${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'OpenAlex (busca por obra)',
-      description: 'Encontre metadados e links para versões abertas quando existirem.',
-      href: `https://openalex.org/works?search=${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'Semantic Scholar',
-      description: 'Outra base para localizar versões de trabalho, preprints e citações.',
-      href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'BASE (Open Access)',
-      description: 'Metabuscador de repositórios institucionais e periódicos abertos.',
-      href: `https://www.base-search.net/Search/Results?lookfor=${encodeURIComponent(query)}&type=all&oaboost=1`,
-    },
-    {
-      title: 'CORE',
-      description: 'Repositório de artigos em acesso aberto do mundo todo.',
-      href: `https://core.ac.uk/search?q=${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'DOAJ',
-      description: 'Base de periódicos e artigos open access.',
-      href: `https://doaj.org/search/articles/${encodeURIComponent(query)}`,
-    },
-    {
-      title: 'Zenodo',
-      description: 'Repositório aberto para preprints, datasets e publicações.',
-      href: `https://zenodo.org/search?page=1&size=20&q=${encodeURIComponent(query)}`,
-    },
-  ]
-
-  if (host) {
-    links.push({
-      title: `Busca aberta em ${host}`,
-      description: 'Ajuda a localizar páginas do mesmo domínio marcadas como free/open.',
-      href: `https://www.google.com/search?q=${encodeURIComponent(`site:${host} "${query}" ("open access" OR "free article" OR pdf)`)}`,
-    })
-  }
-
-  if (doi) {
-    links.unshift({
-      title: 'DOI / Publisher',
-      description: 'URL canônica via DOI (pode oferecer opções de acesso aberto).',
-      href: `https://doi.org/${doi}`,
-    })
-
-    links.push({
-      title: 'OpenAlex (por DOI)',
-      description: 'Metadados e possíveis links para versões acessíveis.',
-      href: `https://openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
-    })
-
-    links.push({
-      title: 'Crossref (por DOI)',
-      description: 'Metadados oficiais da publicação para encontrar versões relacionadas.',
-      href: `https://search.crossref.org/?q=${encodeURIComponent(doi)}`,
-    })
-  }
-
-  return links
-}
-
 function normalizeDoi(doi: string): string {
   return doi.toLowerCase().trim()
 }
@@ -243,91 +192,458 @@ function pickOpenAccessUrl(work: OpenAlexWork): string | null {
   return null
 }
 
+async function checkWaybackClosest(context: CheckContext): Promise<CheckResult> {
+  const title = 'Wayback snapshot'
+
+  try {
+    const response = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(context.url)}`)
+    if (!response.ok) {
+      return {
+        id: 'wayback-closest',
+        title,
+        status: 'not_working',
+        summary: 'API do Internet Archive nao respondeu com sucesso.',
+        links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+      }
+    }
+
+    const data = (await response.json()) as WaybackResponse
+    const snapshot = data.archived_snapshots?.closest
+    if (!snapshot?.available || !snapshot.url) {
+      return {
+        id: 'wayback-closest',
+        title,
+        status: 'not_working',
+        summary: 'Sem snapshot proximo retornado pela API.',
+        links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+      }
+    }
+
+    const dateText = snapshot.timestamp ? formatSnapshotDate(snapshot.timestamp) : 'data indisponivel'
+    return {
+      id: 'wayback-closest',
+      title,
+      status: 'working',
+      summary: `Snapshot encontrado em ${dateText}.`,
+      links: [
+        { label: 'Abrir snapshot', href: snapshot.url },
+        { label: 'Modo sem barra', href: toWaybackNoToolbar(snapshot.url) },
+        { label: 'Modo iframe', href: toWaybackIframe(snapshot.url) },
+        { label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` },
+      ],
+    }
+  } catch {
+    return {
+      id: 'wayback-closest',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar Wayback.',
+      links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+    }
+  }
+}
+
+async function checkWaybackCdx(context: CheckContext): Promise<CheckResult> {
+  const title = 'Wayback capturas'
+
+  try {
+    const endpoint = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(context.url)}&output=json&fl=timestamp,original,statuscode&filter=statuscode:200&limit=5`
+    const response = await fetch(endpoint)
+
+    if (!response.ok) {
+      return {
+        id: 'wayback-cdx',
+        title,
+        status: 'not_working',
+        summary: 'Busca de capturas via CDX nao retornou sucesso.',
+        links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+      }
+    }
+
+    const rows = (await response.json()) as string[][]
+    if (!rows || rows.length <= 1) {
+      return {
+        id: 'wayback-cdx',
+        title,
+        status: 'not_working',
+        summary: 'Nenhuma captura 200 encontrada no CDX para esta URL.',
+        links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+      }
+    }
+
+    const topLinks = rows.slice(1, 4).map((row) => {
+      const timestamp = row[0]
+      return {
+        label: `Captura ${timestamp}`,
+        href: `https://web.archive.org/web/${timestamp}/${context.url}`,
+      }
+    })
+
+    return {
+      id: 'wayback-cdx',
+      title,
+      status: 'working',
+      summary: `${rows.length - 1} captura(s) encontradas na consulta CDX (amostra).`,
+      links: topLinks,
+    }
+  } catch {
+    return {
+      id: 'wayback-cdx',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar capturas CDX.',
+      links: [{ label: 'Timeline Wayback', href: `https://web.archive.org/web/*/${encodeURIComponent(context.url)}` }],
+    }
+  }
+}
+
+async function checkOpenAlex(context: CheckContext): Promise<CheckResult> {
+  const title = 'OpenAlex'
+
+  try {
+    let endpoint = `https://api.openalex.org/works?search=${encodeURIComponent(context.titleHint || context.url)}&filter=is_oa:true&per-page=6`
+    if (context.doi) {
+      endpoint = `https://api.openalex.org/works?filter=doi:${encodeURIComponent(normalizeDoi(context.doi))}&per-page=6`
+    }
+
+    const response = await fetch(endpoint)
+    if (!response.ok) {
+      return {
+        id: 'openalex',
+        title,
+        status: 'not_working',
+        summary: 'API OpenAlex nao retornou sucesso.',
+        links: [{ label: 'Busca OpenAlex', href: `https://openalex.org/works?search=${encodeURIComponent(context.titleHint || context.url)}` }],
+      }
+    }
+
+    const data = (await response.json()) as OpenAlexResponse
+    const works = (data.results ?? []).filter((work) => Boolean(pickOpenAccessUrl(work))).slice(0, 3)
+
+    if (!works.length) {
+      return {
+        id: 'openalex',
+        title,
+        status: 'not_working',
+        summary: 'Nenhum link open access direto encontrado nesta consulta.',
+        links: [{ label: 'Busca OpenAlex', href: `https://openalex.org/works?search=${encodeURIComponent(context.titleHint || context.url)}` }],
+      }
+    }
+
+    return {
+      id: 'openalex',
+      title,
+      status: 'working',
+      summary: `${works.length} resultado(s) com URL aberta encontrada(s).`,
+      links: works
+        .map((work) => {
+          const href = pickOpenAccessUrl(work)
+          if (!href) {
+            return null
+          }
+
+          const year = work.publication_year ? ` (${work.publication_year})` : ''
+          return { label: `${work.display_name}${year}`, href }
+        })
+        .filter((item): item is CheckLink => Boolean(item)),
+    }
+  } catch {
+    return {
+      id: 'openalex',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar OpenAlex.',
+      links: [{ label: 'Busca OpenAlex', href: `https://openalex.org/works?search=${encodeURIComponent(context.titleHint || context.url)}` }],
+    }
+  }
+}
+
+async function checkDoaj(context: CheckContext): Promise<CheckResult> {
+  const title = 'DOAJ'
+  const query = context.titleHint || context.host || context.url
+
+  try {
+    const endpoint = `https://doaj.org/api/search/articles/${encodeURIComponent(query)}?page=1&pageSize=3`
+    const response = await fetch(endpoint)
+
+    if (!response.ok) {
+      return {
+        id: 'doaj',
+        title,
+        status: 'not_working',
+        summary: 'API DOAJ nao retornou sucesso.',
+        links: [{ label: 'Busca DOAJ', href: `https://doaj.org/search/articles/${encodeURIComponent(query)}` }],
+      }
+    }
+
+    const data = (await response.json()) as DoajResponse
+    const total = data.total ?? 0
+
+    if (total <= 0) {
+      return {
+        id: 'doaj',
+        title,
+        status: 'not_working',
+        summary: 'DOAJ nao retornou artigos para esta consulta.',
+        links: [{ label: 'Busca DOAJ', href: `https://doaj.org/search/articles/${encodeURIComponent(query)}` }],
+      }
+    }
+
+    return {
+      id: 'doaj',
+      title,
+      status: 'working',
+      summary: `DOAJ retornou ${total} resultado(s) para a consulta.`,
+      links: [{ label: 'Abrir resultados DOAJ', href: `https://doaj.org/search/articles/${encodeURIComponent(query)}` }],
+    }
+  } catch {
+    return {
+      id: 'doaj',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar DOAJ.',
+      links: [{ label: 'Busca DOAJ', href: `https://doaj.org/search/articles/${encodeURIComponent(query)}` }],
+    }
+  }
+}
+
+async function checkCrossref(context: CheckContext): Promise<CheckResult> {
+  const title = 'Crossref'
+
+  try {
+    if (context.doi) {
+      const endpoint = `https://api.crossref.org/works/${encodeURIComponent(context.doi)}`
+      const response = await fetch(endpoint)
+
+      if (!response.ok) {
+        return {
+          id: 'crossref',
+          title,
+          status: 'not_working',
+          summary: 'Crossref nao confirmou metadado para o DOI informado.',
+          links: [{ label: 'Busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.doi)}` }],
+        }
+      }
+
+      return {
+        id: 'crossref',
+        title,
+        status: 'working',
+        summary: 'DOI confirmado no Crossref.',
+        links: [
+          { label: 'Abrir DOI', href: `https://doi.org/${context.doi}` },
+          { label: 'Busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.doi)}` },
+        ],
+      }
+    }
+
+    const endpoint = `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(context.titleHint || context.url)}&rows=3`
+    const response = await fetch(endpoint)
+
+    if (!response.ok) {
+      return {
+        id: 'crossref',
+        title,
+        status: 'not_working',
+        summary: 'Busca Crossref nao retornou sucesso.',
+        links: [{ label: 'Busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.titleHint || context.url)}` }],
+      }
+    }
+
+    const data = (await response.json()) as CrossrefSearchResponse
+    const count = data.message?.items?.length ?? 0
+
+    if (!count) {
+      return {
+        id: 'crossref',
+        title,
+        status: 'not_working',
+        summary: 'Crossref nao retornou itens para este titulo.',
+        links: [{ label: 'Busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.titleHint || context.url)}` }],
+      }
+    }
+
+    return {
+      id: 'crossref',
+      title,
+      status: 'working',
+      summary: `Crossref retornou ${count} item(ns) para o titulo.`,
+      links: [{ label: 'Abrir busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.titleHint || context.url)}` }],
+    }
+  } catch {
+    return {
+      id: 'crossref',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar Crossref.',
+      links: [{ label: 'Busca Crossref', href: `https://search.crossref.org/?q=${encodeURIComponent(context.titleHint || context.url)}` }],
+    }
+  }
+}
+
+async function checkSemanticScholar(context: CheckContext): Promise<CheckResult> {
+  const title = 'Semantic Scholar'
+
+  try {
+    const query = context.titleHint || context.url
+    const endpoint = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}&limit=3&fields=title,url,openAccessPdf`
+    const response = await fetch(endpoint)
+
+    if (!response.ok) {
+      return {
+        id: 'semantic-scholar',
+        title,
+        status: 'not_working',
+        summary: 'API Semantic Scholar nao retornou sucesso.',
+        links: [{ label: 'Busca Semantic Scholar', href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(query)}` }],
+      }
+    }
+
+    const data = (await response.json()) as SemanticScholarResponse
+    const papers = (data.data ?? []).slice(0, 3)
+    if (!papers.length) {
+      return {
+        id: 'semantic-scholar',
+        title,
+        status: 'not_working',
+        summary: 'Semantic Scholar nao retornou resultados para esta consulta.',
+        links: [{ label: 'Busca Semantic Scholar', href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(query)}` }],
+      }
+    }
+
+    const links: CheckLink[] = []
+    for (const paper of papers) {
+      const href = paper.openAccessPdf?.url || paper.url
+      if (href) {
+        links.push({ label: paper.title || 'Resultado', href })
+      }
+    }
+
+    return {
+      id: 'semantic-scholar',
+      title,
+      status: links.length ? 'working' : 'not_working',
+      summary: links.length
+        ? `${links.length} link(s) encontrado(s) no Semantic Scholar.`
+        : 'Resultados encontrados, mas sem URL aberta direta no payload.',
+      links: links.length
+        ? links
+        : [{ label: 'Busca Semantic Scholar', href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(query)}` }],
+    }
+  } catch {
+    return {
+      id: 'semantic-scholar',
+      title,
+      status: 'not_working',
+      summary: 'Falha de rede ao consultar Semantic Scholar.',
+      links: [{ label: 'Busca Semantic Scholar', href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(context.titleHint || context.url)}` }],
+    }
+  }
+}
+
+function buildUnknownChecks(context: CheckContext): CheckResult[] {
+  const query = context.titleHint || context.url
+
+  return [
+    {
+      id: 'google-scholar-manual',
+      title: 'Google Scholar (manual)',
+      status: 'unknown',
+      summary: 'Navegador nao permite validar automaticamente esta fonte sem interacao/captcha.',
+      links: [{ label: 'Abrir Google Scholar', href: `https://scholar.google.com/scholar?q=${encodeURIComponent(query)}` }],
+    },
+    {
+      id: 'base-manual',
+      title: 'BASE (manual)',
+      status: 'unknown',
+      summary: 'Fonte adicionada como fallback manual para ampliar cobertura open access.',
+      links: [
+        {
+          label: 'Abrir BASE',
+          href: `https://www.base-search.net/Search/Results?lookfor=${encodeURIComponent(query)}&type=all&oaboost=1`,
+        },
+      ],
+    },
+  ]
+}
+
 function App() {
   const [input, setInput] = useState('')
   const [submittedUrl, setSubmittedUrl] = useState('')
-  const [snapshot, setSnapshot] = useState<WaybackSnapshot | null>(null)
-  const [openWorks, setOpenWorks] = useState<OpenAlexWork[]>([])
-  const [snapshotError, setSnapshotError] = useState('')
-  const [openWorksError, setOpenWorksError] = useState('')
+  const [loading, setLoading] = useState(false)
   const [validationError, setValidationError] = useState('')
-  const [loadingSnapshot, setLoadingSnapshot] = useState(false)
-  const [loadingOpenWorks, setLoadingOpenWorks] = useState(false)
+  const [results, setResults] = useState<CheckResult[]>([])
 
-  const doi = useMemo(() => extractDoi(submittedUrl), [submittedUrl])
-  const host = useMemo(() => extractHost(submittedUrl), [submittedUrl])
-  const titleHint = useMemo(() => extractTitleHint(submittedUrl), [submittedUrl])
-  const links = useMemo(() => {
-    if (!submittedUrl) {
-      return []
-    }
-    return buildResourceLinks(submittedUrl, doi, titleHint, host)
-  }, [submittedUrl, doi, titleHint, host])
+  const summary = useMemo(() => {
+    const working = results.filter((result) => result.status === 'working').length
+    const notWorking = results.filter((result) => result.status === 'not_working').length
+    const unknown = results.filter((result) => result.status === 'unknown').length
+
+    return { working, notWorking, unknown }
+  }, [results])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     setValidationError('')
-    setSnapshotError('')
-    setOpenWorksError('')
-    setSnapshot(null)
-    setOpenWorks([])
+    setResults([])
 
     try {
       const normalized = normalizeUrl(input)
-      const detectedDoi = extractDoi(normalized)
-      const detectedTitle = extractTitleHint(normalized) || normalized
+      const context: CheckContext = {
+        url: normalized,
+        doi: extractDoi(normalized),
+        titleHint: extractTitleHint(normalized),
+        host: extractHost(normalized),
+      }
+
       setSubmittedUrl(normalized)
-      setLoadingSnapshot(true)
-      setLoadingOpenWorks(true)
+      setLoading(true)
 
-      const waybackPromise = fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(normalized)}`)
-      let openAlexUrl = `https://api.openalex.org/works?search=${encodeURIComponent(detectedTitle)}&filter=is_oa:true&per-page=6`
+      const checks: Array<Promise<CheckResult>> = [
+        checkWaybackClosest(context),
+        checkWaybackCdx(context),
+        checkOpenAlex(context),
+        checkDoaj(context),
+        checkCrossref(context),
+        checkSemanticScholar(context),
+      ]
 
-      if (detectedDoi) {
-        openAlexUrl = `https://api.openalex.org/works?filter=doi:${encodeURIComponent(normalizeDoi(detectedDoi))}&per-page=6`
-      }
+      const settled = await Promise.allSettled(checks)
+      const asyncResults: CheckResult[] = settled.map((item, index) => {
+        if (item.status === 'fulfilled') {
+          return item.value
+        }
 
-      const openAlexPromise = fetch(openAlexUrl)
-      const [waybackResponse, openAlexResponse] = await Promise.all([waybackPromise, openAlexPromise])
+        const fallbackTitles = ['Wayback snapshot', 'Wayback capturas', 'OpenAlex', 'DOAJ', 'Crossref', 'Semantic Scholar']
+        return {
+          id: `check-${index}`,
+          title: fallbackTitles[index] || `Fonte ${index + 1}`,
+          status: 'not_working',
+          summary: 'A verificacao falhou antes de retornar resultado.',
+          links: [],
+        }
+      })
 
-      if (!waybackResponse.ok) {
-        throw new Error('Falha ao consultar o Internet Archive.')
-      }
-
-      const waybackData = (await waybackResponse.json()) as WaybackResponse
-      setSnapshot(waybackData.archived_snapshots?.closest ?? null)
-
-      if (!openAlexResponse.ok) {
-        throw new Error('Falha ao consultar alternativas open access.')
-      }
-
-      const openAlexData = (await openAlexResponse.json()) as OpenAlexResponse
-      const works = (openAlexData.results ?? []).filter((work) => Boolean(pickOpenAccessUrl(work))).slice(0, 6)
-      setOpenWorks(works)
+      const unknownChecks = buildUnknownChecks(context)
+      setResults([...asyncResults, ...unknownChecks])
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro inesperado.'
-      if (message.includes('URL')) {
-        setValidationError(message)
-      } else if (message.includes('open access')) {
-        setOpenWorksError(message)
-      } else {
-        setSnapshotError(message)
-      }
+      setValidationError(message)
+      setSubmittedUrl('')
     } finally {
-      setLoadingSnapshot(false)
-      setLoadingOpenWorks(false)
+      setLoading(false)
     }
   }
 
   return (
     <main className="page">
-      <section className="hero">
-        <p className="kicker">Acesso aberto, sem atalhos ilegais</p>
-        <h1>Portal de alternativas legais para leitura online</h1>
+      <section className="hero card">
+        <p className="kicker">Acesso aberto</p>
+        <h1>Verificacao paralela de fontes publicas</h1>
         <p className="subtitle">
-          Cole o link de um artigo e receba caminhos públicos: snapshots arquivados, buscadores acadêmicos e
-          repositórios open access.
+          Envie uma URL e o sistema tenta todas as opcoes ao mesmo tempo. O resultado mostra o que funcionou,
+          nao funcionou ou ficou indefinido no navegador.
         </p>
 
         <form className="search" onSubmit={handleSubmit}>
@@ -342,133 +658,67 @@ function App() {
             placeholder="https://exemplo.com/artigo"
             autoComplete="off"
           />
-          <button type="submit" disabled={loadingSnapshot}>
-            {loadingSnapshot ? 'Buscando...' : 'Encontrar alternativas'}
+          <button type="submit" disabled={loading}>
+            {loading ? 'Testando fontes...' : 'Enviar'}
           </button>
         </form>
 
         {validationError && <p className="error">{validationError}</p>}
-
-        <div className="examples">
-          <span>Exemplos:</span>
-          <code>nature.com/... </code>
-          <code>doi.org/10.xxxx/xxxx</code>
-        </div>
       </section>
 
       {submittedUrl && (
         <section className="results" aria-live="polite">
-          <article className="panel">
-            <h2>URL analisada</h2>
-            <a href={submittedUrl} target="_blank" rel="noreferrer">
-              {submittedUrl}
-            </a>
-            {host && <p>Domínio: {host}</p>}
-            {titleHint && <p>Título sugerido: {titleHint}</p>}
-            {doi && <p>DOI detectado: {doi}</p>}
-          </article>
-
-          <article className="panel">
-            <h2>Snapshot no Internet Archive</h2>
-            {!loadingSnapshot && snapshot?.available && snapshot.url && snapshot.timestamp && (
-              <p>
-                Encontrado em {formatSnapshotDate(snapshot.timestamp)}.{' '}
-                <a href={snapshot.url} target="_blank" rel="noreferrer">
-                  Abrir snapshot
-                </a>
-              </p>
-            )}
-            {!loadingSnapshot && snapshot?.available && snapshot.url && (
-              <p>
-                Se o clique travar no overlay, tente a variante{' '}
-                <a href={toWaybackNoToolbar(snapshot.url)} target="_blank" rel="noreferrer">
-                  sem barra da Wayback
-                </a>
-                .
-              </p>
-            )}
-            {!loadingSnapshot && !snapshot?.available && !snapshotError && (
-              <p>Nenhum snapshot próximo encontrado. Use a timeline para explorar outras datas.</p>
-            )}
-            {snapshotError && <p className="error">{snapshotError}</p>}
-          </article>
-
-          <article className="panel">
-            <h2>Quando abrir bloqueio de cookies no snapshot</h2>
-            <ol className="tip-list">
-              <li>Tente outra captura na timeline. Algumas datas carregam sem o mesmo bloqueio.</li>
-              <li>Use a versão sem barra da Wayback para evitar conflito de clique com overlays.</li>
-              <li>Se necessário, teste o modo iframe da captura (algumas páginas respondem melhor).</li>
-              <li>Busque o mesmo título/DOI em repositórios de acesso aberto abaixo.</li>
-            </ol>
-            <div className="quick-links">
-              <a href={`https://web.archive.org/web/*/${encodeURIComponent(submittedUrl)}`} target="_blank" rel="noreferrer">
-                Explorar outras datas
-              </a>
-              {snapshot?.url && (
-                <a href={toWaybackNoToolbar(snapshot.url)} target="_blank" rel="noreferrer">
-                  Abrir sem barra Wayback
-                </a>
-              )}
-              {snapshot?.url && (
-                <a href={toWaybackIframe(snapshot.url)} target="_blank" rel="noreferrer">
-                  Abrir em modo iframe
-                </a>
-              )}
+          <article className="card">
+            <h2>Resumo</h2>
+            <p className="target-url">{submittedUrl}</p>
+            <div className="summary-grid">
+              <div className="summary-item ok">
+                <span>{summary.working}</span>
+                <p>funcionaram</p>
+              </div>
+              <div className="summary-item fail">
+                <span>{summary.notWorking}</span>
+                <p>nao funcionaram</p>
+              </div>
+              <div className="summary-item unknown">
+                <span>{summary.unknown}</span>
+                <p>indefinidas</p>
+              </div>
             </div>
           </article>
 
-          <article className="panel">
-            <h2>Fontes públicas recomendadas</h2>
-            <ul>
-              {links.map((link) => (
-                <li key={link.href}>
-                  <a href={link.href} target="_blank" rel="noreferrer">
-                    {link.title}
-                  </a>
-                  <p>{link.description}</p>
+          <article className="card">
+            <h2>Resultado por fonte</h2>
+            <ul className="result-list">
+              {results.map((result) => (
+                <li key={result.id} className="result-item">
+                  <div className="result-head">
+                    <h3>{result.title}</h3>
+                    <span className={`badge ${result.status}`}>
+                      {result.status === 'working' && 'funcionou'}
+                      {result.status === 'not_working' && 'nao funcionou'}
+                      {result.status === 'unknown' && 'indefinido'}
+                    </span>
+                  </div>
+                  <p>{result.summary}</p>
+                  {result.links.length > 0 && (
+                    <div className="chip-list">
+                      {result.links.map((link) => (
+                        <a key={`${result.id}-${link.href}`} href={link.href} target="_blank" rel="noreferrer">
+                          {link.label}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
-          </article>
-
-          <article className="panel">
-            <h2>Versões open access encontradas (OpenAlex)</h2>
-            {loadingOpenWorks && <p>Buscando versões públicas...</p>}
-            {!loadingOpenWorks && openWorksError && <p className="error">{openWorksError}</p>}
-            {!loadingOpenWorks && !openWorksError && openWorks.length === 0 && (
-              <p>Não encontrei link aberto direto para esta URL. Tente os buscadores acima com outra data/termo.</p>
-            )}
-            {!loadingOpenWorks && openWorks.length > 0 && (
-              <ul>
-                {openWorks.map((work) => {
-                  const openUrl = pickOpenAccessUrl(work)
-                  if (!openUrl) {
-                    return null
-                  }
-
-                  return (
-                    <li key={work.id}>
-                      <a href={openUrl} target="_blank" rel="noreferrer">
-                        {work.display_name}
-                      </a>
-                      <p>
-                        {work.publication_year ? `${work.publication_year}` : 'Ano não informado'}
-                        {work.open_access?.oa_status ? ` • ${work.open_access.oa_status}` : ''}
-                      </p>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
           </article>
         </section>
       )}
 
       <footer>
-        <p>
-          Este projeto não contorna paywalls. Ele só aponta para fontes públicas, arquivos históricos e acesso aberto.
-        </p>
+        <p>O site testa fontes publicas e acesso aberto; nao executa bypass de paywall.</p>
       </footer>
     </main>
   )
