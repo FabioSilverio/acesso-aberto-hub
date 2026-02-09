@@ -541,6 +541,59 @@ async function checkSemanticScholar(context: CheckContext): Promise<CheckResult>
   }
 }
 
+async function checkArchiveToday(context: CheckContext): Promise<CheckResult> {
+  const title = 'Archive.today / Archive.ph'
+  const query = context.url
+  const searchLink = `https://archive.ph/search/?q=${encodeURIComponent(query)}`
+  const submitLink = `https://archive.ph/submit/?url=${encodeURIComponent(query)}`
+  const directLookup = `https://archive.ph/${query}`
+  const directLookupToday = `https://archive.today/${query}`
+
+  try {
+    const response = await fetch(searchLink)
+    if (response.ok) {
+      return {
+        id: 'archive-today',
+        title,
+        status: 'working',
+        summary: 'Consulta ao Archive.today respondeu com sucesso.',
+        links: [
+          { label: 'Buscar no archive.ph', href: searchLink },
+          { label: 'Abrir lookup direto', href: directLookup },
+          { label: 'Abrir em archive.today', href: directLookupToday },
+          { label: 'Salvar snapshot agora', href: submitLink },
+        ],
+      }
+    }
+
+    return {
+      id: 'archive-today',
+      title,
+      status: 'unknown',
+      summary: 'Fonte adicionada, mas o navegador nao confirmou a consulta automaticamente.',
+      links: [
+        { label: 'Buscar no archive.ph', href: searchLink },
+        { label: 'Abrir lookup direto', href: directLookup },
+        { label: 'Abrir em archive.today', href: directLookupToday },
+        { label: 'Salvar snapshot agora', href: submitLink },
+      ],
+    }
+  } catch {
+    return {
+      id: 'archive-today',
+      title,
+      status: 'unknown',
+      summary: 'Fonte adicionada; validacao automatica pode falhar por restricao de CORS.',
+      links: [
+        { label: 'Buscar no archive.ph', href: searchLink },
+        { label: 'Abrir lookup direto', href: directLookup },
+        { label: 'Abrir em archive.today', href: directLookupToday },
+        { label: 'Salvar snapshot agora', href: submitLink },
+      ],
+    }
+  }
+}
+
 function buildUnknownChecks(context: CheckContext): CheckResult[] {
   const query = context.titleHint || context.url
 
@@ -607,6 +660,7 @@ function App() {
         checkDoaj(context),
         checkCrossref(context),
         checkSemanticScholar(context),
+        checkArchiveToday(context),
       ]
 
       const settled = await Promise.allSettled(checks)
@@ -615,7 +669,15 @@ function App() {
           return item.value
         }
 
-        const fallbackTitles = ['Wayback snapshot', 'Wayback capturas', 'OpenAlex', 'DOAJ', 'Crossref', 'Semantic Scholar']
+        const fallbackTitles = [
+          'Wayback snapshot',
+          'Wayback capturas',
+          'OpenAlex',
+          'DOAJ',
+          'Crossref',
+          'Semantic Scholar',
+          'Archive.today / Archive.ph',
+        ]
         return {
           id: `check-${index}`,
           title: fallbackTitles[index] || `Fonte ${index + 1}`,
@@ -642,8 +704,8 @@ function App() {
         <p className="kicker">Acesso aberto</p>
         <h1>Verificacao paralela de fontes publicas</h1>
         <p className="subtitle">
-          Envie uma URL e o sistema tenta todas as opcoes ao mesmo tempo. O resultado mostra o que funcionou,
-          nao funcionou ou ficou indefinido no navegador.
+          Envie uma URL e o sistema tenta todas as opcoes ao mesmo tempo (incluindo archive.ph/archive.today). O
+          resultado mostra o que funcionou, nao funcionou ou ficou indefinido no navegador.
         </p>
 
         <form className="search" onSubmit={handleSubmit}>
