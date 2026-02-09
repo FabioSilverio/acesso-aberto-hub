@@ -171,6 +171,32 @@ button:disabled {
   color: var(--text-soft);
 }
 
+.tip-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--text-soft);
+}
+
+.tip-list li + li {
+  margin-top: 0.45rem;
+}
+
+.quick-links {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.quick-links a {
+  text-decoration: none;
+  border: 1px solid rgba(0, 106, 111, 0.25);
+  background: rgba(0, 106, 111, 0.08);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-weight: 700;
+}
+
 .error {
   color: var(--error);
   font-weight: 700;

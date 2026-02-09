@@ -50,6 +50,43 @@ function extractDoi(text: string): string | null {
   return match?.[0] ?? null
 }
 
+function extractHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '')
+  } catch {
+    return ''
+  }
+}
+
+function extractTitleHint(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const lastPart = parts[parts.length - 1] ?? parsed.hostname
+    const decoded = decodeURIComponent(lastPart)
+    const cleaned = decoded
+      .replace(/\.[a-z0-9]{2,8}$/i, '')
+      .replace(/\d{2,}/g, ' ')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    return cleaned || parsed.hostname
+  } catch {
+    return ''
+  }
+}
+
+function toWaybackNoToolbar(snapshotUrl: string): string {
+  const timestampMatch = snapshotUrl.match(/\/web\/(\d+)\//)
+  if (!timestampMatch) {
+    return snapshotUrl
+  }
+
+  const timestamp = timestampMatch[1]
+  return snapshotUrl.replace(`/web/${timestamp}/`, `/web/${timestamp}id_/`)
+}
+
 function formatSnapshotDate(timestamp: string): string {
   const year = timestamp.slice(0, 4)
   const month = timestamp.slice(4, 6)
@@ -60,7 +97,9 @@ function formatSnapshotDate(timestamp: string): string {
   return `${day}/${month}/${year} ${hour}:${minute}`
 }
 
-function buildResourceLinks(url: string, doi: string | null): ResourceLink[] {
+function buildResourceLinks(url: string, doi: string | null, titleHint: string, host: string): ResourceLink[] {
+  const query = titleHint || url
+
   const links: ResourceLink[] = [
     {
       title: 'Wayback Machine (timeline)',
@@ -68,21 +107,54 @@ function buildResourceLinks(url: string, doi: string | null): ResourceLink[] {
       href: `https://web.archive.org/web/*/${encodeURIComponent(url)}`,
     },
     {
+      title: 'Archive.org (busca geral)',
+      description: 'Procure cópias públicas e itens relacionados pelo título da página.',
+      href: `https://archive.org/search?query=${encodeURIComponent(query)}`,
+    },
+    {
       title: 'Google Scholar',
-      description: 'Busque versões acadêmicas e citações relacionadas.',
-      href: `https://scholar.google.com/scholar?q=${encodeURIComponent(url)}`,
+      description: 'Busque versões acadêmicas, citações e manuscritos relacionados.',
+      href: `https://scholar.google.com/scholar?q=${encodeURIComponent(query)}`,
+    },
+    {
+      title: 'OpenAlex (busca por obra)',
+      description: 'Encontre metadados e links para versões abertas quando existirem.',
+      href: `https://openalex.org/works?search=${encodeURIComponent(query)}`,
+    },
+    {
+      title: 'Semantic Scholar',
+      description: 'Outra base para localizar versões de trabalho, preprints e citações.',
+      href: `https://www.semanticscholar.org/search?q=${encodeURIComponent(query)}`,
+    },
+    {
+      title: 'BASE (Open Access)',
+      description: 'Metabuscador de repositórios institucionais e periódicos abertos.',
+      href: `https://www.base-search.net/Search/Results?lookfor=${encodeURIComponent(query)}&type=all&oaboost=1`,
     },
     {
       title: 'CORE',
       description: 'Repositório de artigos em acesso aberto do mundo todo.',
-      href: `https://core.ac.uk/search?q=${encodeURIComponent(url)}`,
+      href: `https://core.ac.uk/search?q=${encodeURIComponent(query)}`,
     },
     {
       title: 'DOAJ',
       description: 'Base de periódicos e artigos open access.',
-      href: `https://doaj.org/search/articles/${encodeURIComponent(url)}`,
+      href: `https://doaj.org/search/articles/${encodeURIComponent(query)}`,
+    },
+    {
+      title: 'Zenodo',
+      description: 'Repositório aberto para preprints, datasets e publicações.',
+      href: `https://zenodo.org/search?page=1&size=20&q=${encodeURIComponent(query)}`,
     },
   ]
+
+  if (host) {
+    links.push({
+      title: `Busca aberta em ${host}`,
+      description: 'Ajuda a localizar páginas do mesmo domínio marcadas como free/open.',
+      href: `https://www.google.com/search?q=${encodeURIComponent(`site:${host} "${query}" ("open access" OR "free article" OR pdf)`)}`,
+    })
+  }
 
   if (doi) {
     links.unshift({
@@ -95,6 +167,12 @@ function buildResourceLinks(url: string, doi: string | null): ResourceLink[] {
       title: 'OpenAlex (por DOI)',
       description: 'Metadados e possíveis links para versões acessíveis.',
       href: `https://openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
+    })
+
+    links.push({
+      title: 'Crossref (por DOI)',
+      description: 'Metadados oficiais da publicação para encontrar versões relacionadas.',
+      href: `https://search.crossref.org/?q=${encodeURIComponent(doi)}`,
     })
   }
 
@@ -110,12 +188,14 @@ function App() {
   const [loadingSnapshot, setLoadingSnapshot] = useState(false)
 
   const doi = useMemo(() => extractDoi(submittedUrl), [submittedUrl])
+  const host = useMemo(() => extractHost(submittedUrl), [submittedUrl])
+  const titleHint = useMemo(() => extractTitleHint(submittedUrl), [submittedUrl])
   const links = useMemo(() => {
     if (!submittedUrl) {
       return []
     }
-    return buildResourceLinks(submittedUrl, doi)
-  }, [submittedUrl, doi])
+    return buildResourceLinks(submittedUrl, doi, titleHint, host)
+  }, [submittedUrl, doi, titleHint, host])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -191,6 +271,8 @@ function App() {
             <a href={submittedUrl} target="_blank" rel="noreferrer">
               {submittedUrl}
             </a>
+            {host && <p>Domínio: {host}</p>}
+            {titleHint && <p>Título sugerido: {titleHint}</p>}
             {doi && <p>DOI detectado: {doi}</p>}
           </article>
 
@@ -204,10 +286,38 @@ function App() {
                 </a>
               </p>
             )}
+            {!loadingSnapshot && snapshot?.available && snapshot.url && (
+              <p>
+                Se o clique travar no overlay, tente a variante{' '}
+                <a href={toWaybackNoToolbar(snapshot.url)} target="_blank" rel="noreferrer">
+                  sem barra da Wayback
+                </a>
+                .
+              </p>
+            )}
             {!loadingSnapshot && !snapshot?.available && !snapshotError && (
               <p>Nenhum snapshot próximo encontrado. Use a timeline para explorar outras datas.</p>
             )}
             {snapshotError && <p className="error">{snapshotError}</p>}
+          </article>
+
+          <article className="panel">
+            <h2>Quando abrir bloqueio de cookies no snapshot</h2>
+            <ol className="tip-list">
+              <li>Tente outra captura na timeline. Algumas datas carregam sem o mesmo bloqueio.</li>
+              <li>Use a versão sem barra da Wayback para evitar conflito de clique com overlays.</li>
+              <li>Busque o mesmo título/DOI em repositórios de acesso aberto abaixo.</li>
+            </ol>
+            <div className="quick-links">
+              <a href={`https://web.archive.org/web/*/${encodeURIComponent(submittedUrl)}`} target="_blank" rel="noreferrer">
+                Explorar outras datas
+              </a>
+              {snapshot?.url && (
+                <a href={toWaybackNoToolbar(snapshot.url)} target="_blank" rel="noreferrer">
+                  Abrir sem barra Wayback
+                </a>
+              )}
+            </div>
           </article>
 
           <article className="panel">
