@@ -635,6 +635,16 @@ function App() {
     return { working, notWorking, unknown }
   }, [results])
 
+  const orderedResults = useMemo(() => {
+    const archiveToday = results.find((result) => result.id === 'archive-today')
+    if (!archiveToday) {
+      return results
+    }
+
+    const others = results.filter((result) => result.id !== 'archive-today')
+    return [archiveToday, ...others]
+  }, [results])
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -654,13 +664,13 @@ function App() {
       setLoading(true)
 
       const checks: Array<Promise<CheckResult>> = [
+        checkArchiveToday(context),
         checkWaybackClosest(context),
         checkWaybackCdx(context),
         checkOpenAlex(context),
         checkDoaj(context),
         checkCrossref(context),
         checkSemanticScholar(context),
-        checkArchiveToday(context),
       ]
 
       const settled = await Promise.allSettled(checks)
@@ -670,13 +680,13 @@ function App() {
         }
 
         const fallbackTitles = [
+          'Archive.today / Archive.ph',
           'Wayback snapshot',
           'Wayback capturas',
           'OpenAlex',
           'DOAJ',
           'Crossref',
           'Semantic Scholar',
-          'Archive.today / Archive.ph',
         ]
         return {
           id: `check-${index}`,
@@ -752,10 +762,16 @@ function App() {
           <article className="card">
             <h2>Resultado por fonte</h2>
             <ul className="result-list">
-              {results.map((result) => (
-                <li key={result.id} className="result-item">
+              {orderedResults.map((result) => (
+                <li
+                  key={result.id}
+                  className={`result-item ${result.id === 'archive-today' ? 'main-source' : ''}`.trim()}
+                >
                   <div className="result-head">
-                    <h3>{result.title}</h3>
+                    <h3>
+                      {result.title}
+                      {result.id === 'archive-today' && <span className="main-tag">principal</span>}
+                    </h3>
                     <span className={`badge ${result.status}`}>
                       {result.status === 'working' && 'funcionou'}
                       {result.status === 'not_working' && 'nao funcionou'}
