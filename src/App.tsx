@@ -20,6 +20,35 @@ type ResourceLink = {
   href: string
 }
 
+type OpenAlexSource = {
+  display_name?: string
+}
+
+type OpenAlexLocation = {
+  is_oa?: boolean
+  license?: string | null
+  landing_page_url?: string | null
+  pdf_url?: string | null
+  source?: OpenAlexSource
+}
+
+type OpenAlexWork = {
+  id: string
+  display_name: string
+  publication_year?: number
+  doi?: string | null
+  open_access?: {
+    is_oa?: boolean
+    oa_url?: string | null
+    oa_status?: string | null
+  }
+  locations?: OpenAlexLocation[]
+}
+
+type OpenAlexResponse = {
+  results?: OpenAlexWork[]
+}
+
 const DOI_REGEX = /10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i
 
 function normalizeUrl(rawUrl: string): string {
@@ -85,6 +114,16 @@ function toWaybackNoToolbar(snapshotUrl: string): string {
 
   const timestamp = timestampMatch[1]
   return snapshotUrl.replace(`/web/${timestamp}/`, `/web/${timestamp}id_/`)
+}
+
+function toWaybackIframe(snapshotUrl: string): string {
+  const timestampMatch = snapshotUrl.match(/\/web\/(\d+)\//)
+  if (!timestampMatch) {
+    return snapshotUrl
+  }
+
+  const timestamp = timestampMatch[1]
+  return snapshotUrl.replace(`/web/${timestamp}/`, `/web/${timestamp}if_/`)
 }
 
 function formatSnapshotDate(timestamp: string): string {
@@ -179,13 +218,41 @@ function buildResourceLinks(url: string, doi: string | null, titleHint: string, 
   return links
 }
 
+function normalizeDoi(doi: string): string {
+  return doi.toLowerCase().trim()
+}
+
+function pickOpenAccessUrl(work: OpenAlexWork): string | null {
+  if (work.open_access?.oa_url) {
+    return work.open_access.oa_url
+  }
+
+  if (!work.locations) {
+    return null
+  }
+
+  for (const location of work.locations) {
+    if (location.pdf_url) {
+      return location.pdf_url
+    }
+    if (location.landing_page_url) {
+      return location.landing_page_url
+    }
+  }
+
+  return null
+}
+
 function App() {
   const [input, setInput] = useState('')
   const [submittedUrl, setSubmittedUrl] = useState('')
   const [snapshot, setSnapshot] = useState<WaybackSnapshot | null>(null)
+  const [openWorks, setOpenWorks] = useState<OpenAlexWork[]>([])
   const [snapshotError, setSnapshotError] = useState('')
+  const [openWorksError, setOpenWorksError] = useState('')
   const [validationError, setValidationError] = useState('')
   const [loadingSnapshot, setLoadingSnapshot] = useState(false)
+  const [loadingOpenWorks, setLoadingOpenWorks] = useState(false)
 
   const doi = useMemo(() => extractDoi(submittedUrl), [submittedUrl])
   const host = useMemo(() => extractHost(submittedUrl), [submittedUrl])
@@ -202,29 +269,54 @@ function App() {
 
     setValidationError('')
     setSnapshotError('')
+    setOpenWorksError('')
     setSnapshot(null)
+    setOpenWorks([])
 
     try {
       const normalized = normalizeUrl(input)
+      const detectedDoi = extractDoi(normalized)
+      const detectedTitle = extractTitleHint(normalized) || normalized
       setSubmittedUrl(normalized)
       setLoadingSnapshot(true)
+      setLoadingOpenWorks(true)
 
-      const response = await fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(normalized)}`)
-      if (!response.ok) {
+      const waybackPromise = fetch(`https://archive.org/wayback/available?url=${encodeURIComponent(normalized)}`)
+      let openAlexUrl = `https://api.openalex.org/works?search=${encodeURIComponent(detectedTitle)}&filter=is_oa:true&per-page=6`
+
+      if (detectedDoi) {
+        openAlexUrl = `https://api.openalex.org/works?filter=doi:${encodeURIComponent(normalizeDoi(detectedDoi))}&per-page=6`
+      }
+
+      const openAlexPromise = fetch(openAlexUrl)
+      const [waybackResponse, openAlexResponse] = await Promise.all([waybackPromise, openAlexPromise])
+
+      if (!waybackResponse.ok) {
         throw new Error('Falha ao consultar o Internet Archive.')
       }
 
-      const data = (await response.json()) as WaybackResponse
-      setSnapshot(data.archived_snapshots?.closest ?? null)
+      const waybackData = (await waybackResponse.json()) as WaybackResponse
+      setSnapshot(waybackData.archived_snapshots?.closest ?? null)
+
+      if (!openAlexResponse.ok) {
+        throw new Error('Falha ao consultar alternativas open access.')
+      }
+
+      const openAlexData = (await openAlexResponse.json()) as OpenAlexResponse
+      const works = (openAlexData.results ?? []).filter((work) => Boolean(pickOpenAccessUrl(work))).slice(0, 6)
+      setOpenWorks(works)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro inesperado.'
       if (message.includes('URL')) {
         setValidationError(message)
+      } else if (message.includes('open access')) {
+        setOpenWorksError(message)
       } else {
         setSnapshotError(message)
       }
     } finally {
       setLoadingSnapshot(false)
+      setLoadingOpenWorks(false)
     }
   }
 
@@ -306,6 +398,7 @@ function App() {
             <ol className="tip-list">
               <li>Tente outra captura na timeline. Algumas datas carregam sem o mesmo bloqueio.</li>
               <li>Use a versão sem barra da Wayback para evitar conflito de clique com overlays.</li>
+              <li>Se necessário, teste o modo iframe da captura (algumas páginas respondem melhor).</li>
               <li>Busque o mesmo título/DOI em repositórios de acesso aberto abaixo.</li>
             </ol>
             <div className="quick-links">
@@ -315,6 +408,11 @@ function App() {
               {snapshot?.url && (
                 <a href={toWaybackNoToolbar(snapshot.url)} target="_blank" rel="noreferrer">
                   Abrir sem barra Wayback
+                </a>
+              )}
+              {snapshot?.url && (
+                <a href={toWaybackIframe(snapshot.url)} target="_blank" rel="noreferrer">
+                  Abrir em modo iframe
                 </a>
               )}
             </div>
@@ -332,6 +430,37 @@ function App() {
                 </li>
               ))}
             </ul>
+          </article>
+
+          <article className="panel">
+            <h2>Versões open access encontradas (OpenAlex)</h2>
+            {loadingOpenWorks && <p>Buscando versões públicas...</p>}
+            {!loadingOpenWorks && openWorksError && <p className="error">{openWorksError}</p>}
+            {!loadingOpenWorks && !openWorksError && openWorks.length === 0 && (
+              <p>Não encontrei link aberto direto para esta URL. Tente os buscadores acima com outra data/termo.</p>
+            )}
+            {!loadingOpenWorks && openWorks.length > 0 && (
+              <ul>
+                {openWorks.map((work) => {
+                  const openUrl = pickOpenAccessUrl(work)
+                  if (!openUrl) {
+                    return null
+                  }
+
+                  return (
+                    <li key={work.id}>
+                      <a href={openUrl} target="_blank" rel="noreferrer">
+                        {work.display_name}
+                      </a>
+                      <p>
+                        {work.publication_year ? `${work.publication_year}` : 'Ano não informado'}
+                        {work.open_access?.oa_status ? ` • ${work.open_access.oa_status}` : ''}
+                      </p>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
           </article>
         </section>
       )}
